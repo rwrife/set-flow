@@ -67,7 +67,9 @@ Current build shape is a standard iPhone app with native iPad support disabled b
 - `ASC_TEAM_ID` is the App Store Connect team identifier used for signing/provisioning selection.
 
 ## Current status
-Scaffold phase only. Repository currently contains planning docs, policy contracts, and issue backlog. No Xcode project, app binary, or test suite is claimed yet.
+Native iPhone foundation is implemented: a SwiftUI app target, shared Xcode scheme, pure-Swift `SetFlowKit` package, launch UI test, and pinned Linux/macOS CI lanes. Product domain, persistence, session runner, history, and export work remain tracked in issues #2–#7.
+
+The app remains local-first and zero-network. CI enforces the exact `com.infinityball.setflow` bundle ID, iPhone-only family `1`, disabled native iPad support, iOS 26+ SDK floor, and absence of cross-platform framework manifests.
 
 ## Milestones (high level)
 1. Foundation + CI skeleton + contract checks
@@ -76,11 +78,31 @@ Scaffold phase only. Repository currently contains planning docs, policy contrac
 4. Analytics summaries + export/backup
 5. Accessibility hardening + TestFlight packaging evidence
 
-## Development quickstart (scaffold stage)
+## Development quickstart
 ```bash
 git clone https://github.com/rwrife/set-flow.git
 cd set-flow
-# Read README + PLAN + issue backlog, then implement via PR-first issue slices.
+
+# Pure domain package (works on Linux/macOS with Swift 6.2)
+swift test --package-path Packages/SetFlowKit
+
+# Local policy gates
+python3 -m unittest discover -s Scripts/tests -v
+bash scripts/check_zero_network.sh
+bash scripts/check_native_only.sh
+
+# Native simulator build and launch test (macOS, pinned Xcode 26.0.1 / 17A400)
+SIMULATOR_UDID="<available iPhone simulator UDID for iOS 26.0>"
+xcodebuild build \
+  -project SetFlow.xcodeproj \
+  -scheme SetFlow \
+  -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+xcodebuild test \
+  -project SetFlow.xcodeproj \
+  -scheme SetFlow \
+  -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 ```
 
-When app source exists, this section will add concrete `xcodebuild` commands and simulator targets.
+CI runs the native commands through `Scripts/ci.sh`, first measuring the exact pinned Xcode version, build, and SDK. Linux structural checks do not substitute for the macOS build, built-app `UIDeviceFamily == [1]` check, or launch XCUITest.
