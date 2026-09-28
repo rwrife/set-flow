@@ -26,16 +26,17 @@ jobs:
         run: swift test --package-path Packages/SetFlowKit
       - name: Toolchain and platform contract
         run: |
-          python3 - <<'PY'
-          import json
-          with open("toolchain.json", encoding="utf-8") as handle:
-              pins = json.load(handle)
-          assert pins["bundle_identifier"] == "com.infinityball.setflow"
-          assert pins["targeted_device_family"] == "1"
-          assert pins["native_ipad_support"] is False
-          assert pins["minimum_sdk_major"] >= 26
+          swift - <<'SWIFT'
+          import Foundation
+
+          let data = try Data(contentsOf: URL(fileURLWithPath: "toolchain.json"))
+          let pins = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+          precondition(pins["bundle_identifier"] as? String == "com.infinityball.setflow")
+          precondition(pins["targeted_device_family"] as? String == "1")
+          precondition(pins["native_ipad_support"] as? Bool == false)
+          precondition((pins["minimum_sdk_major"] as? Int).map { $0 >= 26 } == true)
           print("Toolchain contract: PASS")
-          PY
+          SWIFT
       - name: Zero-network gate
         run: bash scripts/check_zero_network.sh
       - name: Native-only framework gate
