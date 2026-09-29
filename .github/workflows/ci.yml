@@ -22,8 +22,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Swift version
         run: swift --version
+      - name: Install SQLite headers
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq libsqlite3-dev
       - name: Run package tests
-        run: swift test --package-path Packages/SetFlowKit
+        run: swift test --package-path Packages/SetFlowKit -Xswiftc -warnings-as-errors
       - name: Toolchain and platform contract
         run: |
           swift - <<'SWIFT'
