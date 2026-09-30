@@ -85,6 +85,14 @@ public enum UnilateralSide: String, Codable, CaseIterable, Sendable {
     case unknown
 }
 
+/// What a logged set-entry represents in the session event stream.
+/// `skipped` entries carry no repetitions and mark a planned slot as
+/// intentionally not performed.
+public enum SetEntryKind: String, Codable, CaseIterable, Sendable {
+    case completed
+    case skipped
+}
+
 public struct Exercise: Codable, Hashable, Sendable {
     public let id: ExerciseID
     public var name: String
@@ -151,6 +159,7 @@ public struct Session: Codable, Hashable, Sendable {
     public let routineID: RoutineID?
     public let startedAt: Timestamp
     public var completedAt: Timestamp?
+    public var abandonedAt: Timestamp?
     public var note: String?
 
     public init(
@@ -158,12 +167,14 @@ public struct Session: Codable, Hashable, Sendable {
         routineID: RoutineID?,
         startedAt: Timestamp,
         completedAt: Timestamp? = nil,
+        abandonedAt: Timestamp? = nil,
         note: String? = nil
     ) {
         self.id = id
         self.routineID = routineID
         self.startedAt = startedAt
         self.completedAt = completedAt
+        self.abandonedAt = abandonedAt
         self.note = note
     }
 }
@@ -179,6 +190,7 @@ public struct SetEntry: Codable, Hashable, Sendable {
     public let load: LoadValue?
     public let side: UnilateralSide?
     public let asymmetryNote: String?
+    public let kind: SetEntryKind
 
     public init(
         id: SetEntryID = .init(),
@@ -190,7 +202,8 @@ public struct SetEntry: Codable, Hashable, Sendable {
         repetitions: Int? = nil,
         load: LoadValue? = nil,
         side: UnilateralSide? = nil,
-        asymmetryNote: String? = nil
+        asymmetryNote: String? = nil,
+        kind: SetEntryKind = .completed
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -202,6 +215,29 @@ public struct SetEntry: Codable, Hashable, Sendable {
         self.load = load
         self.side = side
         self.asymmetryNote = asymmetryNote
+        self.kind = kind
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, sessionID, exerciseID, setBlockID, sequence, completedAt
+        case repetitions, load, side, asymmetryNote, kind
+    }
+
+    /// Entries logged before issue #3 carry no `kind`; they decode as
+    /// completed so historical backups and store rows stay readable.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(SetEntryID.self, forKey: .id)
+        sessionID = try container.decode(SessionID.self, forKey: .sessionID)
+        exerciseID = try container.decode(ExerciseID.self, forKey: .exerciseID)
+        setBlockID = try container.decodeIfPresent(SetBlockID.self, forKey: .setBlockID)
+        sequence = try container.decode(Int.self, forKey: .sequence)
+        completedAt = try container.decode(Timestamp.self, forKey: .completedAt)
+        repetitions = try container.decodeIfPresent(Int.self, forKey: .repetitions)
+        load = try container.decodeIfPresent(LoadValue.self, forKey: .load)
+        side = try container.decodeIfPresent(UnilateralSide.self, forKey: .side)
+        asymmetryNote = try container.decodeIfPresent(String.self, forKey: .asymmetryNote)
+        kind = try container.decodeIfPresent(SetEntryKind.self, forKey: .kind) ?? .completed
     }
 }
 
@@ -230,6 +266,16 @@ public enum SetFlowValidationError: Error, Equatable, Sendable {
     case duplicateIdentifier
     case invalidSequence(expected: Int, actual: Int)
     case sessionAlreadyCompleted
+    case sessionAlreadyAbandoned
+    case routineIdentityMismatch
+    case unmatchableSetEntry(SetEntryID)
+    case invalidSkip(String)
+}
+
+public enum SessionStatus: String, Codable, CaseIterable, Sendable {
+    case active
+    case completed
+    case abandoned
 }
 
 public extension Exercise {
@@ -271,6 +317,15 @@ public extension Routine {
 public extension Session {
     func validate() throws {
         if let completedAt, completedAt < startedAt { throw SetFlowValidationError.timestampOrder }
+        if let abandonedAt, abandonedAt < startedAt { throw SetFlowValidationError.timestampOrder }
+    }
+
+    /// Durable session status. Derived state — never stored separately, so a
+    /// reopened store can reconstruct it from the same rows deterministically.
+    var status: SessionStatus {
+        if abandonedAt != nil { return .abandoned }
+        if completedAt != nil { return .completed }
+        return .active
     }
 }
 
@@ -279,5 +334,8 @@ public extension SetEntry {
         guard sequence >= 0 else { throw SetFlowValidationError.invalidSequence(expected: 0, actual: sequence) }
         if let repetitions, repetitions <= 0 { throw SetFlowValidationError.invalidRepetitions(repetitions) }
         if let load, load.amountInThousandths < 0 { throw SetFlowValidationError.invalidLoad(load.amountInThousandths) }
+        if kind == .skipped, repetitions != nil {
+            throw SetFlowValidationError.invalidSkip("Skipped entries must not carry repetitions")
+        }
     }
 }
