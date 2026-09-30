@@ -33,8 +33,8 @@ struct DomainTests {
     @Test("namespace reports domain milestone")
     func namespace() {
         #expect(SetFlowKit.domain == "SetFlowKit")
-        #expect(SetFlowKit.milestone == "M1-domain-core")
-        #expect(SetFlowKit.domainSchemaVersion == 1)
+        #expect(SetFlowKit.milestone == "M2-session-runtime")
+        #expect(SetFlowKit.domainSchemaVersion == 4)
     }
 
     @Test("typed identifiers encode as stable UUID objects")
@@ -122,6 +122,7 @@ struct StoreTests {
             "v1-initial-schema",
             "v2-schema-provenance",
             "v3-preserve-history-links",
+            "v4-session-runtime",
         ])
     }
 
@@ -474,6 +475,7 @@ struct StoreTests {
             "v1-initial-schema",
             "v2-schema-provenance",
             "v3-preserve-history-links",
+            "v4-session-runtime",
         ])
         let routineID = RoutineID(rawValue: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000022")))
         let sessionID = SessionID(rawValue: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000023")))

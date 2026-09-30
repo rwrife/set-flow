@@ -8,6 +8,7 @@ public enum StoreError: Error, Equatable, Sendable {
     case sessionAlreadyCompleted
     case blockConflict(String)
     case migrationFailure(String)
+    case staleRestTimerWrite
 }
 
 public final class SetFlowStore: @unchecked Sendable {
@@ -168,6 +169,31 @@ public final class SetFlowStore: @unchecked Sendable {
             try db.execute(
                 sql: "INSERT OR REPLACE INTO schema_metadata (key, value, appliedAt) VALUES (?, ?, ?)",
                 arguments: ["schema_version", "3", Int64(Date().timeIntervalSince1970 * 1000)]
+            )
+        }
+
+        migrator.registerMigration("v4-session-runtime") { db in
+            // Issue #3: durable session abandonment, entry kind (completed/skip),
+            // and a rest-timer anchor table. All additive — no history rewrite.
+            try db.alter(table: "session") { t in
+                t.add(column: "abandonedAt", .integer)
+            }
+            try db.alter(table: "set_entry") { t in
+                t.add(column: "kind", .text).notNull().defaults(to: "completed")
+            }
+            try db.create(table: "rest_timer") { t in
+                t.column("sessionId", .text).primaryKey().references("session", onDelete: .cascade)
+                t.column("phase", .text).notNull()
+                t.column("startedAt", .integer)
+                t.column("endsAt", .integer)
+                t.column("durationSeconds", .real)
+                t.column("pausedAt", .integer)
+                t.column("pausedRemainingMilliseconds", .integer)
+                t.column("updatedAt", .integer).notNull()
+            }
+            try db.execute(
+                sql: "INSERT OR REPLACE INTO schema_metadata (key, value, appliedAt) VALUES (?, ?, ?)",
+                arguments: ["schema_version", "4", Int64(Date().timeIntervalSince1970 * 1000)]
             )
         }
 
@@ -381,70 +407,72 @@ public extension SetFlowStore {
     }
 
     func fetchRoutine(id: RoutineID) throws -> Routine? {
-        try reader.read { db in
-            guard let row = try Row.fetchOne(
-                db,
-                sql: "SELECT id, name, createdAt, updatedAt FROM routine WHERE id = ?",
-                arguments: [id.rawValue.uuidString.lowercased()]
-            ) else {
-                return nil
-            }
+        try reader.read { db in try Self.fetchRoutineUnlocked(db, id: id) }
+    }
 
-            let blockRows = try Row.fetchAll(
-                db,
-                sql: """
-                SELECT b.id, b.position, b.targetRepetitions, b.targetLoadThousandths, b.targetLoadUnit, b.note,
-                       e.id AS exerciseId, e.name AS exerciseName, e.createdAt AS exerciseCreatedAt, e.updatedAt AS exerciseUpdatedAt
-                FROM set_block b
-                JOIN exercise e ON e.id = b.exerciseId
-                WHERE b.routineId = ?
-                ORDER BY b.position ASC
-                """,
-                arguments: [id.rawValue.uuidString.lowercased()]
+    static func fetchRoutineUnlocked(_ db: Database, id: RoutineID) throws -> Routine? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT id, name, createdAt, updatedAt FROM routine WHERE id = ?",
+            arguments: [id.rawValue.uuidString.lowercased()]
+        ) else {
+            return nil
+        }
+
+        let blockRows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT b.id, b.position, b.targetRepetitions, b.targetLoadThousandths, b.targetLoadUnit, b.note,
+                   e.id AS exerciseId, e.name AS exerciseName, e.createdAt AS exerciseCreatedAt, e.updatedAt AS exerciseUpdatedAt
+            FROM set_block b
+            JOIN exercise e ON e.id = b.exerciseId
+            WHERE b.routineId = ?
+            ORDER BY b.position ASC
+            """,
+            arguments: [id.rawValue.uuidString.lowercased()]
+        )
+
+        let blocks = try blockRows.map { row -> SetBlock in
+            guard let blockUUID = UUID(uuidString: row["id"]) else {
+                throw StoreError.recordNotFound("Invalid block UUID")
+            }
+            guard let exUUID = UUID(uuidString: row["exerciseId"]) else {
+                throw StoreError.recordNotFound("Invalid exercise UUID")
+            }
+            let exercise = Exercise(
+                id: ExerciseID(rawValue: exUUID),
+                name: row["exerciseName"],
+                createdAt: Timestamp(millisecondsSinceUnixEpoch: row["exerciseCreatedAt"]),
+                updatedAt: Timestamp(millisecondsSinceUnixEpoch: row["exerciseUpdatedAt"])
             )
-
-            let blocks = try blockRows.map { row -> SetBlock in
-                guard let blockUUID = UUID(uuidString: row["id"]) else {
-                    throw StoreError.recordNotFound("Invalid block UUID")
-                }
-                guard let exUUID = UUID(uuidString: row["exerciseId"]) else {
-                    throw StoreError.recordNotFound("Invalid exercise UUID")
-                }
-                let exercise = Exercise(
-                    id: ExerciseID(rawValue: exUUID),
-                    name: row["exerciseName"],
-                    createdAt: Timestamp(millisecondsSinceUnixEpoch: row["exerciseCreatedAt"]),
-                    updatedAt: Timestamp(millisecondsSinceUnixEpoch: row["exerciseUpdatedAt"])
-                )
-                let targetLoad: LoadValue?
-                if let thousandths: Int64 = row["targetLoadThousandths"],
-                   let unitStr: String = row["targetLoadUnit"],
-                   let unit = LoadUnit(rawValue: unitStr) {
-                    targetLoad = LoadValue(amountInThousandths: thousandths, unit: unit)
-                } else {
-                    targetLoad = nil
-                }
-                return SetBlock(
-                    id: SetBlockID(rawValue: blockUUID),
-                    exercise: exercise,
-                    position: row["position"],
-                    targetRepetitions: row["targetRepetitions"],
-                    targetLoad: targetLoad,
-                    note: row["note"]
-                )
+            let targetLoad: LoadValue?
+            if let thousandths: Int64 = row["targetLoadThousandths"],
+               let unitStr: String = row["targetLoadUnit"],
+               let unit = LoadUnit(rawValue: unitStr) {
+                targetLoad = LoadValue(amountInThousandths: thousandths, unit: unit)
+            } else {
+                targetLoad = nil
             }
-
-            guard let routineUUID = UUID(uuidString: row["id"]) else {
-                throw StoreError.recordNotFound("Invalid routine UUID")
-            }
-            return Routine(
-                id: RoutineID(rawValue: routineUUID),
-                name: row["name"],
-                blocks: blocks,
-                createdAt: Timestamp(millisecondsSinceUnixEpoch: row["createdAt"]),
-                updatedAt: Timestamp(millisecondsSinceUnixEpoch: row["updatedAt"])
+            return SetBlock(
+                id: SetBlockID(rawValue: blockUUID),
+                exercise: exercise,
+                position: row["position"],
+                targetRepetitions: row["targetRepetitions"],
+                targetLoad: targetLoad,
+                note: row["note"]
             )
         }
+
+        guard let routineUUID = UUID(uuidString: row["id"]) else {
+            throw StoreError.recordNotFound("Invalid routine UUID")
+        }
+        return Routine(
+            id: RoutineID(rawValue: routineUUID),
+            name: row["name"],
+            blocks: blocks,
+            createdAt: Timestamp(millisecondsSinceUnixEpoch: row["createdAt"]),
+            updatedAt: Timestamp(millisecondsSinceUnixEpoch: row["updatedAt"])
+        )
     }
 
     func fetchRoutines() throws -> [Routine] {
@@ -505,13 +533,15 @@ public extension SetFlowStore {
         try writer.write { db in
             guard let row = try Row.fetchOne(
                 db,
-                sql: "SELECT startedAt, completedAt FROM session WHERE id = ?",
+                sql: "SELECT startedAt, completedAt, abandonedAt FROM session WHERE id = ?",
                 arguments: [id.rawValue.uuidString.lowercased()]
             ) else {
                 throw StoreError.recordNotFound("Session not found")
             }
             let existingCompletion: Int64? = row["completedAt"]
             guard existingCompletion == nil else { throw StoreError.sessionAlreadyCompleted }
+            let existingAbandonment: Int64? = row["abandonedAt"]
+            guard existingAbandonment == nil else { throw SetFlowValidationError.sessionAlreadyAbandoned }
             let startedAt = Timestamp(millisecondsSinceUnixEpoch: row["startedAt"])
             if completedAt < startedAt {
                 throw SetFlowValidationError.timestampOrder
@@ -527,6 +557,33 @@ public extension SetFlowStore {
         }
     }
 
+    /// Durably abandons an active session. Logged entries are preserved;
+    /// abandonment is a terminal transition and cannot be undone by design,
+    /// so recorded history keeps an honest record of the attempt.
+    func abandonSession(id: SessionID, abandonedAt: Timestamp = Timestamp(date: Date())) throws {
+        try writer.write { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT startedAt, completedAt, abandonedAt FROM session WHERE id = ?",
+                arguments: [id.rawValue.uuidString.lowercased()]
+            ) else {
+                throw StoreError.recordNotFound("Session not found")
+            }
+            let existingCompletion: Int64? = row["completedAt"]
+            guard existingCompletion == nil else { throw StoreError.sessionAlreadyCompleted }
+            let existingAbandonment: Int64? = row["abandonedAt"]
+            guard existingAbandonment == nil else { throw SetFlowValidationError.sessionAlreadyAbandoned }
+            let startedAt = Timestamp(millisecondsSinceUnixEpoch: row["startedAt"])
+            if abandonedAt < startedAt {
+                throw SetFlowValidationError.timestampOrder
+            }
+            try db.execute(
+                sql: "UPDATE session SET abandonedAt = ? WHERE id = ?",
+                arguments: [abandonedAt.millisecondsSinceUnixEpoch, id.rawValue.uuidString.lowercased()]
+            )
+        }
+    }
+
     func logSetEntry(
         sessionID: SessionID,
         exerciseID: ExerciseID,
@@ -535,18 +592,21 @@ public extension SetFlowStore {
         repetitions: Int? = nil,
         load: LoadValue? = nil,
         side: UnilateralSide? = nil,
-        asymmetryNote: String? = nil
+        asymmetryNote: String? = nil,
+        kind: SetEntryKind = .completed
     ) throws -> SetEntry {
         try writer.write { db in
             guard let row = try Row.fetchOne(
                 db,
-                sql: "SELECT startedAt, completedAt, routineId FROM session WHERE id = ?",
+                sql: "SELECT startedAt, completedAt, abandonedAt, routineId FROM session WHERE id = ?",
                 arguments: [sessionID.rawValue.uuidString.lowercased()]
             ) else {
                 throw StoreError.recordNotFound("Session not found")
             }
             let completedAtValue: Int64? = row["completedAt"]
             guard completedAtValue == nil else { throw StoreError.sessionAlreadyCompleted }
+            let abandonedAtValue: Int64? = row["abandonedAt"]
+            guard abandonedAtValue == nil else { throw SetFlowValidationError.sessionAlreadyAbandoned }
             let sessionStartedAt = Timestamp(millisecondsSinceUnixEpoch: row["startedAt"])
             guard completedAt >= sessionStartedAt else {
                 throw SetFlowValidationError.timestampOrder
@@ -586,6 +646,10 @@ public extension SetFlowStore {
             ) ?? -1
             let nextSeq = maxSeq + 1
 
+            if kind == .skipped, setBlockID == nil {
+                throw SetFlowValidationError.invalidSkip("A skipped set must reference a planned block slot")
+            }
+
             let entry = SetEntry(
                 sessionID: sessionID,
                 exerciseID: exerciseID,
@@ -595,7 +659,8 @@ public extension SetFlowStore {
                 repetitions: repetitions,
                 load: load,
                 side: side,
-                asymmetryNote: asymmetryNote
+                asymmetryNote: asymmetryNote,
+                kind: kind
             )
             try entry.validate()
 
@@ -603,8 +668,8 @@ public extension SetFlowStore {
                 sql: """
                 INSERT INTO set_entry (
                     id, sessionId, exerciseId, setBlockId, sequence,
-                    completedAt, repetitions, loadThousandths, loadUnit, side, asymmetryNote
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    completedAt, repetitions, loadThousandths, loadUnit, side, asymmetryNote, kind
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 arguments: [
                     entry.id.rawValue.uuidString.lowercased(),
@@ -618,6 +683,7 @@ public extension SetFlowStore {
                     entry.load?.unit.rawValue,
                     entry.side?.rawValue,
                     entry.asymmetryNote,
+                    entry.kind.rawValue,
                 ]
             )
             return entry
@@ -625,71 +691,100 @@ public extension SetFlowStore {
     }
 
     func fetchSession(id: SessionID) throws -> Session? {
-        try reader.read { db in
-            guard let row = try Row.fetchOne(
-                db,
-                sql: "SELECT id, routineId, startedAt, completedAt, note FROM session WHERE id = ?",
-                arguments: [id.rawValue.uuidString.lowercased()]
-            ) else {
-                return nil
-            }
-            guard let uuid = UUID(uuidString: row["id"]) else {
-                throw StoreError.recordNotFound("Corrupt session ID")
-            }
-            let routineID = (row["routineId"] as String?).flatMap { UUID(uuidString: $0).map(RoutineID.init) }
-            let completedAt = (row["completedAt"] as Int64?).map { Timestamp(millisecondsSinceUnixEpoch: $0) }
-            return Session(
-                id: SessionID(rawValue: uuid),
-                routineID: routineID,
-                startedAt: Timestamp(millisecondsSinceUnixEpoch: row["startedAt"]),
-                completedAt: completedAt,
-                note: row["note"]
-            )
-        }
+        try reader.read { db in try Self.fetchSessionUnlocked(db, id: id) }
     }
 
-    func fetchEntries(sessionID: SessionID) throws -> [SetEntry] {
+    /// Interrupted (active) sessions in resume order, oldest first — the list
+    /// the runner uses to reopen an interrupted session after relaunch.
+    func fetchActiveSessions() throws -> [Session] {
         try reader.read { db in
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                SELECT id, sessionId, exerciseId, setBlockId, sequence,
-                       completedAt, repetitions, loadThousandths, loadUnit, side, asymmetryNote
-                FROM set_entry
-                WHERE sessionId = ?
-                ORDER BY sequence ASC
-                """,
-                arguments: [sessionID.rawValue.uuidString.lowercased()]
+                SELECT id FROM session
+                WHERE completedAt IS NULL AND abandonedAt IS NULL
+                ORDER BY startedAt ASC
+                """
             )
-            return try rows.map { row in
-                guard let idUUID = UUID(uuidString: row["id"]),
-                      let sessionUUID = UUID(uuidString: row["sessionId"]),
-                      let exerciseUUID = UUID(uuidString: row["exerciseId"]) else {
-                    throw StoreError.recordNotFound("Corrupt entry ID")
+            return try rows.compactMap { row in
+                guard let uuid = UUID(uuidString: row["id"]) else {
+                    throw StoreError.recordNotFound("Corrupt session ID")
                 }
-                let blockUUID = (row["setBlockId"] as String?).flatMap(UUID.init).map(SetBlockID.init)
-                let load: LoadValue?
-                if let thousandths: Int64 = row["loadThousandths"],
-                   let unitStr: String = row["loadUnit"],
-                   let unit = LoadUnit(rawValue: unitStr) {
-                    load = LoadValue(amountInThousandths: thousandths, unit: unit)
-                } else {
-                    load = nil
-                }
-                let side = (row["side"] as String?).flatMap(UnilateralSide.init(rawValue:))
-                return SetEntry(
-                    id: SetEntryID(rawValue: idUUID),
-                    sessionID: SessionID(rawValue: sessionUUID),
-                    exerciseID: ExerciseID(rawValue: exerciseUUID),
-                    setBlockID: blockUUID,
-                    sequence: row["sequence"],
-                    completedAt: Timestamp(millisecondsSinceUnixEpoch: row["completedAt"]),
-                    repetitions: row["repetitions"],
-                    load: load,
-                    side: side,
-                    asymmetryNote: row["asymmetryNote"]
-                )
+                return try Self.fetchSessionUnlocked(db, id: SessionID(rawValue: uuid))
             }
+        }
+    }
+
+    static func fetchSessionUnlocked(_ db: Database, id: SessionID) throws -> Session? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT id, routineId, startedAt, completedAt, abandonedAt, note FROM session WHERE id = ?",
+            arguments: [id.rawValue.uuidString.lowercased()]
+        ) else {
+            return nil
+        }
+        guard let uuid = UUID(uuidString: row["id"]) else {
+            throw StoreError.recordNotFound("Corrupt session ID")
+        }
+        let routineID = (row["routineId"] as String?).flatMap { UUID(uuidString: $0).map(RoutineID.init) }
+        let completedAt = (row["completedAt"] as Int64?).map { Timestamp(millisecondsSinceUnixEpoch: $0) }
+        let abandonedAt = (row["abandonedAt"] as Int64?).map { Timestamp(millisecondsSinceUnixEpoch: $0) }
+        return Session(
+            id: SessionID(rawValue: uuid),
+            routineID: routineID,
+            startedAt: Timestamp(millisecondsSinceUnixEpoch: row["startedAt"]),
+            completedAt: completedAt,
+            abandonedAt: abandonedAt,
+            note: row["note"]
+        )
+    }
+
+    func fetchEntries(sessionID: SessionID) throws -> [SetEntry] {
+        try reader.read { db in try Self.fetchEntriesUnlocked(db, sessionID: sessionID) }
+    }
+
+    static func fetchEntriesUnlocked(_ db: Database, sessionID: SessionID) throws -> [SetEntry] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT id, sessionId, exerciseId, setBlockId, sequence,
+                   completedAt, repetitions, loadThousandths, loadUnit, side, asymmetryNote, kind
+            FROM set_entry
+            WHERE sessionId = ?
+            ORDER BY sequence ASC
+            """,
+            arguments: [sessionID.rawValue.uuidString.lowercased()]
+        )
+        return try rows.map { row in
+            guard let idUUID = UUID(uuidString: row["id"]),
+                  let sessionUUID = UUID(uuidString: row["sessionId"]),
+                  let exerciseUUID = UUID(uuidString: row["exerciseId"]) else {
+                throw StoreError.recordNotFound("Corrupt entry ID")
+            }
+            let blockUUID = (row["setBlockId"] as String?).flatMap(UUID.init).map(SetBlockID.init)
+            let load: LoadValue?
+            if let thousandths: Int64 = row["loadThousandths"],
+               let unitStr: String = row["loadUnit"],
+               let unit = LoadUnit(rawValue: unitStr) {
+                load = LoadValue(amountInThousandths: thousandths, unit: unit)
+            } else {
+                load = nil
+            }
+            let side = (row["side"] as String?).flatMap(UnilateralSide.init(rawValue:))
+            let kind = (row["kind"] as String?).flatMap(SetEntryKind.init(rawValue:)) ?? .completed
+            return SetEntry(
+                id: SetEntryID(rawValue: idUUID),
+                sessionID: SessionID(rawValue: sessionUUID),
+                exerciseID: ExerciseID(rawValue: exerciseUUID),
+                setBlockID: blockUUID,
+                sequence: row["sequence"],
+                completedAt: Timestamp(millisecondsSinceUnixEpoch: row["completedAt"]),
+                repetitions: row["repetitions"],
+                load: load,
+                side: side,
+                asymmetryNote: row["asymmetryNote"],
+                kind: kind
+            )
         }
     }
 
@@ -705,6 +800,127 @@ public extension SetFlowStore {
             try db.execute(
                 sql: "DELETE FROM session WHERE id = ? AND completedAt IS NULL",
                 arguments: [id.rawValue.uuidString.lowercased()]
+            )
+        }
+    }
+
+    /// Removes the highest-sequence entry from an active session (runner
+    /// "undo"). The queue is derived from the remaining event stream, so the
+    /// undone slot becomes pending again deterministically. Sequence numbers
+    /// stay dense: the relogged set reuses the freed sequence slot but gets a
+    /// fresh entry identity.
+    @discardableResult
+    func undoLastSetEntry(sessionID: SessionID) throws -> SetEntry {
+        try writer.write { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT completedAt, abandonedAt FROM session WHERE id = ?",
+                arguments: [sessionID.rawValue.uuidString.lowercased()]
+            ) else {
+                throw StoreError.recordNotFound("Session not found")
+            }
+            let completedAtValue: Int64? = row["completedAt"]
+            guard completedAtValue == nil else { throw StoreError.sessionAlreadyCompleted }
+            let abandonedAtValue: Int64? = row["abandonedAt"]
+            guard abandonedAtValue == nil else { throw SetFlowValidationError.sessionAlreadyAbandoned }
+
+            let entries = try Self.fetchEntriesUnlocked(db, sessionID: sessionID)
+            guard let last = entries.max(by: { $0.sequence < $1.sequence }) else {
+                throw StoreError.recordNotFound("Session has no entries to undo")
+            }
+            try db.execute(
+                sql: "DELETE FROM set_entry WHERE id = ?",
+                arguments: [last.id.rawValue.uuidString.lowercased()]
+            )
+            return last
+        }
+    }
+
+    /// Rebuilds the deterministic queue snapshot for a persisted session from
+    /// durable state alone — the same call serves live runner ticks and app
+    /// relaunch restoration.
+    func queueSnapshot(sessionID: SessionID) throws -> SessionQueueSnapshot {
+        try reader.read { db in
+            guard let session = try Self.fetchSessionUnlocked(db, id: sessionID) else {
+                throw StoreError.recordNotFound("Session not found")
+            }
+            let routine = try session.routineID.flatMap { try Self.fetchRoutineUnlocked(db, id: $0) }
+            let entries = try Self.fetchEntriesUnlocked(db, sessionID: sessionID)
+            return try SessionQueue.snapshot(routine: routine, session: session, entries: entries)
+        }
+    }
+
+    // MARK: Durable rest timer
+
+    /// Reads the persisted rest-timer anchors for a session (idle when absent).
+    func restTimer(for sessionID: SessionID) throws -> RestTimer {
+        try reader.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: """
+                SELECT startedAt, endsAt, durationSeconds, pausedAt, pausedRemainingMilliseconds
+                FROM rest_timer WHERE sessionId = ?
+                """,
+                arguments: [sessionID.rawValue.uuidString.lowercased()]
+            ) else {
+                return .idle
+            }
+            return RestTimer(
+                startedAt: (row["startedAt"] as Int64?).map { Timestamp(millisecondsSinceUnixEpoch: $0) },
+                endsAt: (row["endsAt"] as Int64?).map { Timestamp(millisecondsSinceUnixEpoch: $0) },
+                duration: row["durationSeconds"] as Double?,
+                pausedAt: (row["pausedAt"] as Int64?).map { Timestamp(millisecondsSinceUnixEpoch: $0) },
+                pausedRemainingMilliseconds: row["pausedRemainingMilliseconds"] as Int64?
+            )
+        }
+    }
+
+    /// Persists the rest-timer anchors atomically. `updatedAt` must be monotonic
+    /// (>= the stored value) so a stale in-memory copy can never clobber a
+    /// fresher anchor after a relaunch race.
+    func saveRestTimer(_ timer: RestTimer, for sessionID: SessionID, updatedAt: Timestamp) throws {
+        try writer.write { db in
+            guard let session = try Self.fetchSessionUnlocked(db, id: sessionID) else {
+                throw StoreError.recordNotFound("Session not found")
+            }
+            switch session.status {
+            case .completed: throw StoreError.sessionAlreadyCompleted
+            case .abandoned: throw SetFlowValidationError.sessionAlreadyAbandoned
+            case .active: break
+            }
+            let existing = try Int64.fetchOne(
+                db,
+                sql: "SELECT updatedAt FROM rest_timer WHERE sessionId = ?",
+                arguments: [sessionID.rawValue.uuidString.lowercased()]
+            )
+            guard existing == nil || existing! <= updatedAt.millisecondsSinceUnixEpoch else {
+                throw StoreError.staleRestTimerWrite
+            }
+            try db.execute(
+                sql: """
+                INSERT INTO rest_timer (
+                    sessionId, phase, startedAt, endsAt, durationSeconds,
+                    pausedAt, pausedRemainingMilliseconds, updatedAt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(sessionId) DO UPDATE SET
+                    phase = excluded.phase,
+                    startedAt = excluded.startedAt,
+                    endsAt = excluded.endsAt,
+                    durationSeconds = excluded.durationSeconds,
+                    pausedAt = excluded.pausedAt,
+                    pausedRemainingMilliseconds = excluded.pausedRemainingMilliseconds,
+                    updatedAt = excluded.updatedAt
+                """,
+                arguments: [
+                    sessionID.rawValue.uuidString.lowercased(),
+                    timer.phase(at: updatedAt).rawValue,
+                    timer.startedAt?.millisecondsSinceUnixEpoch,
+                    timer.endsAt?.millisecondsSinceUnixEpoch,
+                    timer.duration,
+                    timer.pausedAt?.millisecondsSinceUnixEpoch,
+                    timer.pausedRemainingMilliseconds,
+                    updatedAt.millisecondsSinceUnixEpoch,
+                ]
             )
         }
     }

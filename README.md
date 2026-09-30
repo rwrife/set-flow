@@ -67,7 +67,7 @@ Current build shape is a standard iPhone app with native iPad support disabled b
 - `ASC_TEAM_ID` is the App Store Connect team identifier used for signing/provisioning selection.
 
 ## Current status
-Native iPhone foundation and the first local domain layer are implemented: a SwiftUI app target, shared Xcode scheme, `SetFlowKit` models, GRDB/SQLite routine CRUD, append-oriented session logging, versioned migration fixtures, launch UI test, and pinned Linux/macOS CI lanes. Session runner, history, and export work remain tracked in issues #3–#7.
+Native iPhone foundation, the local domain layer, and the deterministic session runtime are implemented: a SwiftUI app target, shared Xcode scheme, `SetFlowKit` models, GRDB/SQLite routine CRUD, append-oriented session logging with durable abandonment and undo, the pure deterministic set-queue engine (current/next/skipped state reconstructed identically after relaunch), an anchor-based durable rest timer with monotonic persistence, versioned migration fixtures, launch UI test, and pinned Linux/macOS CI lanes. History, export, and packaging work remain tracked in issues #4–#7.
 
 The app remains local-first and zero-network. CI enforces the exact `com.infinityball.setflow` bundle ID, iPhone-only family `1`, disabled native iPad support, iOS 26+ SDK floor, and absence of cross-platform framework manifests.
 
