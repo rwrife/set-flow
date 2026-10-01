@@ -44,10 +44,10 @@ final class SetFlowLaunchTests: XCTestCase {
         exercise1.typeText("Push Up")
 
         // The keyboard covers lower rows; scroll the Form before the next
-        // exercise field can be hit. `lastMatch` = second (bottom-most)
-        // block.name query match (query-level API, two rows only).
+        // exercise field can be hit. `matching(...).element(boundBy:)` is
+        // query-level API (XCUIElement only exposes firstMatch).
         app.swipeUp()
-        let exercise2 = app.textFields["block.name"].lastMatch
+        let exercise2 = app.textFields.matching(identifier: "block.name").element(boundBy: 1)
         XCTAssertTrue(exercise2.waitForExistence(timeout: 5))
         exercise2.tap()
         exercise2.typeText("Pull Up")
