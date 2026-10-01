@@ -6,6 +6,7 @@ final class SetFlowLaunchTests: XCTestCase {
         continueAfterFailure = false
     }
 
+    @MainActor
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-ui-testing"]
@@ -43,9 +44,10 @@ final class SetFlowLaunchTests: XCTestCase {
         exercise1.typeText("Push Up")
 
         // The keyboard covers lower rows; scroll the Form before the next
-        // exercise field can be hit.
+        // exercise field can be hit. `lastMatch` = second (bottom-most)
+        // block.name query match (query-level API, two rows only).
         app.swipeUp()
-        let exercise2 = app.textFields["block.name"].element(boundBy: 1)
+        let exercise2 = app.textFields["block.name"].lastMatch
         XCTAssertTrue(exercise2.waitForExistence(timeout: 5))
         exercise2.tap()
         exercise2.typeText("Pull Up")
