@@ -173,6 +173,7 @@ private struct RoutineEditorView: View {
                 Section("Routine") {
                     TextField("Routine name", text: $name)
                         .focused($keyboardFocused)
+                        .onSubmit { keyboardFocused = false }
                         .accessibilityIdentifier("routine.name")
                 }
                 Section {
@@ -180,6 +181,7 @@ private struct RoutineEditorView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             TextField("Exercise name", text: $block.name)
                                 .focused($keyboardFocused)
+                                .onSubmit { keyboardFocused = false }
                                 .accessibilityIdentifier("block.name")
                             Stepper("Sets: \(block.sets)", value: $block.sets, in: 1...20)
                                 .accessibilityIdentifier("block.sets")

@@ -29,28 +29,30 @@ final class SetFlowLaunchTests: XCTestCase {
         app.buttons["routine.create"].tap()
         XCTAssertTrue(app.textFields["routine.name"].waitForExistence(timeout: 5))
 
-        let name = app.textFields["routine.name"]
-        name.tap()
-        name.typeText("Push Day")
-
-        // Add both exercise rows BEFORE typing into them: `block.add`
-        // dismisses the keyboard, and rows below the keyboard are unhittable.
+        // Add both exercise rows BEFORE focusing any field: taps land
+        // cleanly while no keyboard is up.
         app.buttons["block.add"].tap()
         app.buttons["block.add"].tap()
         let exercise1 = app.textFields["block.name"].firstMatch
         XCTAssertTrue(exercise1.waitForExistence(timeout: 5))
 
-        exercise1.tap()
-        exercise1.typeText("Push Up")
+        // Every text journey ends with "\n": Return fires the field's
+        // onSubmit, which resigns focus so the keyboard never occludes
+        // the next control (XCUITest considers keyboard-covered elements
+        // hittable and taps silently no-op).
+        let name = app.textFields["routine.name"]
+        name.tap()
+        name.typeText("Push Day\n")
 
-        // The keyboard covers lower rows; scroll the Form before the next
-        // exercise field can be hit. `matching(...).element(boundBy:)` is
-        // query-level API (XCUIElement only exposes firstMatch).
-        app.swipeUp()
+        exercise1.tap()
+        exercise1.typeText("Push Up\n")
+
+        // matching(...).element(boundBy:) is query-level API (XCUIElement
+        // only exposes firstMatch).
         let exercise2 = app.textFields.matching(identifier: "block.name").element(boundBy: 1)
         XCTAssertTrue(exercise2.waitForExistence(timeout: 5))
         exercise2.tap()
-        exercise2.typeText("Pull Up")
+        exercise2.typeText("Pull Up\n")
 
         app.buttons["routine.save"].tap()
 
@@ -67,17 +69,18 @@ final class SetFlowLaunchTests: XCTestCase {
 
         reps.tap()
         reps.typeText("10")
-        app.buttons["session.log"].tap()
+        // Log-set sits above the keyboard; logging also resigns focus.
+        app.buttons["session.log"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["session.result"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["session.result"].label.contains("10"))
 
-        // Second set is now current; preview shows no further exercise.
+        // Second set is now current.
         XCTAssertTrue(app.staticTexts["session.current"].label.contains("Pull Up"))
 
         let reps2 = app.textFields["session.reps"]
         reps2.tap()
         reps2.typeText("8")
-        app.buttons["session.log"].tap()
+        app.buttons["session.log"].firstMatch.tap()
 
         // All planned slots resolved → finish becomes available.
         let finish = app.buttons["session.finish"]
