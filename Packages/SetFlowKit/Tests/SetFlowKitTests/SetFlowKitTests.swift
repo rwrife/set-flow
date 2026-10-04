@@ -33,7 +33,7 @@ struct DomainTests {
     @Test("namespace reports domain milestone")
     func namespace() {
         #expect(SetFlowKit.domain == "SetFlowKit")
-        #expect(SetFlowKit.milestone == "M3-runner-ui")
+        #expect(SetFlowKit.milestone == "M4-history-summaries")
         #expect(SetFlowKit.domainSchemaVersion == 4)
     }
 

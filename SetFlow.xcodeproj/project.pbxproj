@@ -10,6 +10,8 @@
 		A10000000000000000000102 /* BootstrapHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000202 /* BootstrapHomeView.swift */; };
 		A10000000000000000000103 /* SetFlowLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000203 /* SetFlowLaunchTests.swift */; };
 		A10000000000000000000104 /* SetFlowKit in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000801 /* SetFlowKit */; };
+		A10000000000000000000105 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000206 /* HistoryView.swift */; };
+		A10000000000000000000106 /* HistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000207 /* HistoryTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -28,6 +30,8 @@
 		A10000000000000000000203 /* SetFlowLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetFlowLaunchTests.swift; sourceTree = "<group>"; };
 		A10000000000000000000204 /* SetFlow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SetFlow.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000205 /* SetFlowUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SetFlowUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000206 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		A10000000000000000000207 /* HistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -60,13 +64,17 @@
 			children = (
 				A10000000000000000000201 /* SetFlowApp.swift */,
 				A10000000000000000000202 /* BootstrapHomeView.swift */,
+				A10000000000000000000206 /* HistoryView.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
 		};
 		A10000000000000000000502 /* UITests */ = {
 			isa = PBXGroup;
-			children = (A10000000000000000000203 /* SetFlowLaunchTests.swift */,);
+			children = (
+				A10000000000000000000203 /* SetFlowLaunchTests.swift */,
+				A10000000000000000000207 /* HistoryTests.swift */,
+			);
 			path = UITests;
 			sourceTree = "<group>";
 		};
@@ -158,13 +166,17 @@
 			files = (
 				A10000000000000000000101 /* SetFlowApp.swift in Sources */,
 				A10000000000000000000102 /* BootstrapHomeView.swift in Sources */,
+				A10000000000000000000105 /* HistoryView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A10000000000000000000702 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A10000000000000000000103 /* SetFlowLaunchTests.swift in Sources */,);
+			files = (
+				A10000000000000000000103 /* SetFlowLaunchTests.swift in Sources */,
+				A10000000000000000000106 /* HistoryTests.swift in Sources */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */

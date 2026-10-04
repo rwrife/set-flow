@@ -8,6 +8,7 @@ struct BootstrapHomeView: View {
     @State private var editingRoutine: Routine?
     @State private var showEditor = false
     @State private var showRunner = false
+    @State private var showHistory = false
     @State private var errorText: String?
 
     var body: some View {
@@ -58,6 +59,17 @@ struct BootstrapHomeView: View {
                 }
             }
             .navigationTitle("Set Flow")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("History") { showHistory = true }
+                        .accessibilityIdentifier("history.open")
+                }
+            }
+            .navigationDestination(isPresented: $showHistory) {
+                if let store {
+                    HistoryView(store: store)
+                }
+            }
             .sheet(isPresented: $showEditor) {
                 if let store {
                     RoutineEditorView(store: store, initial: editingRoutine) {

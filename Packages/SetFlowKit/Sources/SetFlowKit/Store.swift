@@ -12,8 +12,10 @@ public enum StoreError: Error, Equatable, Sendable {
 }
 
 public final class SetFlowStore: @unchecked Sendable {
-    private let writer: any DatabaseWriter
-    private let reader: any DatabaseReader
+    // Module-internal (not private) so the history extension in
+    // HistoryStore.swift can read durable rows; invisible outside SetFlowKit.
+    let writer: any DatabaseWriter
+    let reader: any DatabaseReader
 
     private init(writer: any DatabaseWriter) {
         self.writer = writer
