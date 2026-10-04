@@ -9,7 +9,7 @@ public enum SetFlowKit {
     public static let domain = "SetFlowKit"
 
     /// Current build/CI milestone marker consumed by the app's debug surface.
-    public static let milestone = "M3-runner-ui"
+    public static let milestone = "M4-history-summaries"
 
     /// Domain schema revision shared with persistence migrations.
     public static let domainSchemaVersion = 4
