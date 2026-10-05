@@ -9,6 +9,7 @@ struct BootstrapHomeView: View {
     @State private var showEditor = false
     @State private var showRunner = false
     @State private var showHistory = false
+    @State private var showSettings = false
     @State private var errorText: String?
 
     var body: some View {
@@ -60,6 +61,10 @@ struct BootstrapHomeView: View {
             }
             .navigationTitle("Set Flow")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Data & Privacy") { showSettings = true }
+                        .accessibilityIdentifier("settings.open")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("History") { showHistory = true }
                         .accessibilityIdentifier("history.open")
@@ -68,6 +73,11 @@ struct BootstrapHomeView: View {
             .navigationDestination(isPresented: $showHistory) {
                 if let store {
                     HistoryView(store: store)
+                }
+            }
+            .navigationDestination(isPresented: $showSettings) {
+                if let store {
+                    DataSettingsView(store: store) { reload() }
                 }
             }
             .sheet(isPresented: $showEditor) {
