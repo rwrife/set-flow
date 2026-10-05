@@ -202,15 +202,16 @@ public extension SetFlowStore {
         let sessionIDs = Set(current.sessions.map(\.id))
         let entryIDs = Set(current.entries.map(\.id))
         let timerIDs = Set((current.timers ?? []).map(\.sessionID))
-        let conflicts = incoming.exercises.filter { exerciseIDs.contains($0.id) }.count
-            + incoming.routines.filter { routineIDs.contains($0.id) }.count
-            + incoming.sessions.filter { sessionIDs.contains($0.id) }.count
-            + incoming.entries.filter { entryIDs.contains($0.id) }.count
-            + (incoming.timers ?? []).filter { timerIDs.contains($0.sessionID) }.count
-        let incomingCount = incoming.exercises.count + incoming.routines.count + incoming.sessions.count
-            + incoming.entries.count + (incoming.timers ?? []).count
-        let currentCount = current.exercises.count + current.routines.count + current.sessions.count
-            + current.entries.count + (current.timers ?? []).count
+        let exerciseConflicts = incoming.exercises.filter { exerciseIDs.contains($0.id) }.count
+        let routineConflicts = incoming.routines.filter { routineIDs.contains($0.id) }.count
+        let sessionConflicts = incoming.sessions.filter { sessionIDs.contains($0.id) }.count
+        let entryConflicts = incoming.entries.filter { entryIDs.contains($0.id) }.count
+        let timerConflicts = (incoming.timers ?? []).filter { timerIDs.contains($0.sessionID) }.count
+        let conflicts = exerciseConflicts + routineConflicts + sessionConflicts + entryConflicts + timerConflicts
+        let incomingCount = [incoming.exercises.count, incoming.routines.count, incoming.sessions.count,
+                             incoming.entries.count, (incoming.timers ?? []).count].reduce(0, +)
+        let currentCount = [current.exercises.count, current.routines.count, current.sessions.count,
+                            current.entries.count, (current.timers ?? []).count].reduce(0, +)
         return RestorePreview(adding: incomingCount - conflicts, replacing: currentCount, conflicts: conflicts,
                               storeFingerprint: try BackupCodec.encode(current),
                               archiveFingerprint: try BackupCodec.encode(incoming))
