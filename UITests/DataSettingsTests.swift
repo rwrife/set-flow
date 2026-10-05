@@ -28,6 +28,8 @@ final class DataSettingsTests: XCTestCase {
         let confirm = app.buttons["Delete all workouts"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.tap()
-        XCTAssertTrue(app.staticTexts["settings.notice"].waitForExistence(timeout: 5))
+        // The confirmation notice is appended below the Form's delete row;
+        // SwiftUI may not realize it until the Form scrolls to the end.
+        reveal(app.staticTexts["settings.notice"], in: app)
     }
 }
