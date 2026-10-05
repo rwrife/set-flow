@@ -29,6 +29,8 @@ let package = Package(
             ],
             resources: [
                 .copy("Fixtures/v1.sql"),
+                .copy("Fixtures/backup-v1.json"),
+                .copy("Fixtures/backup-v2.json"),
             ]
         ),
     ]
