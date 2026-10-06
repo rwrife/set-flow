@@ -1,0 +1,317 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload the exported build to TestFlight"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SCHEME: SetFlow
+  BUNDLE_ID: com.infinityball.setflow
+
+jobs:
+  release-gate:
+    name: Release commit gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Require green Pinned iOS CI on this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow "Pinned iOS CI" \
+            --branch main \
+            --commit "$RELEASE_SHA" \
+            --json conclusion --jq '[.[].conclusion] | if any(. == "success") then "success" else "none" end')
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::No successful Pinned iOS CI run for $RELEASE_SHA — release commit must be a green mainline commit"
+            exit 1
+          fi
+          echo "Pinned iOS CI is green on $RELEASE_SHA: PASS"
+
+  testflight:
+    name: Archive + TestFlight upload
+    needs: release-gate
+    runs-on: macos-15
+    timeout-minutes: 75
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
+      MARKETING_VERSION: 0.1.0
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - name: Select the pinned Xcode (exact toolchain.json pin) and record versions
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          DEVELOPER_DIR="$(python3 Scripts/select_xcode.py --toolchain toolchain.json | tee build/developer-dir.txt)"
+          export DEVELOPER_DIR
+          {
+            echo "developer_dir=$DEVELOPER_DIR"
+            xcodebuild -version
+            xcrun --sdk iphoneos --show-sdk-version | sed 's/^/iphoneos_sdk=/'
+          } | tee build/toolchain-versions.txt
+
+      - name: Inspect default keychain signing identities (counts only)
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          # The runner login keychain is unlocked with the codesigning
+          # partition preconfigured; -allowProvisioningUpdates writes the
+          # generated key and certificate there. Never create an empty custom
+          # keychain (set-key-partition-list fails with errSecItemNotFound).
+          security find-identity -v -p codesigning 2>/dev/null \
+            | awk '/valid identities found/{print "Available code-signing identities: " $1}'
+
+      - name: Write App Store Connect API key (file only; contents never logged)
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_TEAM_ID: ${{ secrets.ASC_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$ASC_KEY_P8" | sed 's/\\n/\n/g' > "$RUNNER_TEMP/asc/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/asc/AuthKey.p8"
+          {
+            echo "ASC_KEY_ID_VALUE=$ASC_KEY_ID"
+            echo "ASC_ISSUER_ID_VALUE=$ASC_ISSUER_ID"
+            echo "ASC_TEAM_ID_VALUE=$ASC_TEAM_ID"
+          } >> "$GITHUB_ENV"
+          test -s "$RUNNER_TEMP/asc/AuthKey.p8"
+          echo "API key file staged at $RUNNER_TEMP/asc/AuthKey.p8 (mode 600)"
+
+      - name: Archive (automatic signing via ASC API key; logs contained)
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          export DEVELOPER_DIR
+          DEVELOPER_DIR="$(cat build/developer-dir.txt)"
+          python3 Scripts/signing_capture.py build/archive-signing.json -- \
+            xcodebuild archive \
+            -project SetFlow.xcodeproj \
+            -scheme "$SCHEME" \
+            -destination "generic/platform=iOS" \
+            -archivePath build/SetFlow.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8" \
+            -authenticationKeyID "$ASC_KEY_ID_VALUE" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID_VALUE" \
+            DEVELOPMENT_TEAM="$ASC_TEAM_ID_VALUE" \
+            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=YES \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            MARKETING_VERSION="$MARKETING_VERSION"
+
+      - name: Verify archive contract (bundle id, iPhone-only, icon, privacy manifest)
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          export DEVELOPER_DIR
+          DEVELOPER_DIR="$(cat build/developer-dir.txt)"
+          APP="build/SetFlow.xcarchive/Products/Applications/SetFlow.app"
+          plutil -convert json -o build/archive-info.json "$APP/Info.plist"
+          python3 - build/archive-info.json "$BUILD_NUMBER" "$MARKETING_VERSION" <<'PYTHON'
+          import json
+          import sys
+
+          sys.path.insert(0, "Scripts")
+          import release_evidence
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              info = json.load(handle)
+          release_evidence.check_archive(info, sys.argv[2], sys.argv[3])
+          print("Archive contract: PASS (bundle id, UIDeviceFamily [1], version, build)")
+          PYTHON
+          if [ ! -f "$APP/Assets.car" ]; then
+            echo "::error::Archive app bundle is missing Assets.car (app icon did not compile)"
+            exit 1
+          fi
+          find "$APP" -maxdepth 1 -name 'AppIcon*.png' | grep -q . \
+            || { echo "::error::No emitted AppIcon rasters in archive"; exit 1; }
+          echo "App icon artifact evidence: Assets.car + AppIcon rasters present"
+          test -f "$APP/PrivacyInfo.xcprivacy" \
+            || { echo "::error::Archive app bundle is missing PrivacyInfo.xcprivacy"; exit 1; }
+          echo "Privacy manifest embedded in archive: PASS"
+          codesign --verify --deep --strict "$APP"
+          echo "Archive codesign verification: PASS"
+          rm -f build/archive-info.json
+
+      - name: Build export options plist
+        env:
+          UPLOAD: ${{ github.event_name == 'push' || inputs.upload == true }}
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          python3 - "$UPLOAD" "$ASC_TEAM_ID_VALUE" > build/ExportOptions.plist <<'PYTHON'
+          import sys
+
+          upload = sys.argv[1] != "false"
+          body = """  <key>method</key>
+          <string>app-store-connect</string>
+          <key>signingStyle</key>
+          <string>automatic</string>
+          <key>manageAppVersionAndBuildNumber</key>
+          <false/>
+          <key>uploadSymbols</key>
+          <true/>
+          <key>teamID</key>
+          <string>__TEAM__</string>
+          """
+          if upload:
+              body += """  <key>destination</key>
+          <string>upload</string>
+          <key>uploadMethod</key>
+          <string>app-store-connect</string>
+          """
+          body = body.replace("__TEAM__", sys.argv[2])
+          print("""<?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          """ + body + """</dict>
+          </plist>""")
+          PYTHON
+          plutil -lint build/ExportOptions.plist
+
+      - name: Export and upload to TestFlight
+        env:
+          UPLOAD: ${{ github.event_name == 'push' || inputs.upload == true }}
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          export DEVELOPER_DIR
+          DEVELOPER_DIR="$(cat build/developer-dir.txt)"
+          python3 -c 'import datetime as dt; print(dt.datetime.now(dt.timezone.utc).isoformat())' > build/upload-started.txt
+          export_args=(-exportArchive -archivePath build/SetFlow.xcarchive
+                       -exportPath build/export
+                       -exportOptionsPlist build/ExportOptions.plist
+                       -allowProvisioningUpdates
+                       -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey.p8"
+                       -authenticationKeyID "$ASC_KEY_ID_VALUE"
+                       -authenticationKeyIssuerID "$ASC_ISSUER_ID_VALUE")
+          if [ "$UPLOAD" = "false" ]; then
+            echo "Dry-run dispatch: archive validated without TestFlight upload"
+          fi
+          python3 Scripts/signing_capture.py build/export-signing.json -- \
+            xcodebuild "${export_args[@]}"
+
+      - name: Await processed TestFlight build (ASC API)
+        if: ${{ github.event_name == 'push' || inputs.upload == true }}
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          # macOS Homebrew Python is externally managed (PEP 668): use a venv.
+          VENV="$RUNNER_TEMP/asc-venv"
+          python3 -m venv "$VENV"
+          "$VENV/bin/pip" install --quiet 'pyjwt[crypto]'
+          WV_P8_PATH="$RUNNER_TEMP/asc/AuthKey.p8" \
+          WV_KEY_ID="$ASC_KEY_ID_VALUE" \
+          WV_ISSUER_ID="$ASC_ISSUER_ID_VALUE" \
+          WV_BUNDLE_ID="$BUNDLE_ID" \
+          WV_BUILD_NUMBER="$BUILD_NUMBER" \
+          "$VENV/bin/python3" Scripts/asc_poll.py
+
+      - name: Record release provenance
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          {
+            echo "release_sha=$GITHUB_SHA"
+            echo "tag=${GITHUB_REF_NAME}"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "build_number=$BUILD_NUMBER"
+            echo "marketing_version=$MARKETING_VERSION"
+            echo "bundle_id=$BUNDLE_ID"
+          } | tee build/release-provenance.txt
+
+      - name: Retain release artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-evidence
+          path: |
+            build/toolchain-versions.txt
+            build/archive-info.json
+            build/release-provenance.txt
+            build/archive-signing.json
+            build/export-signing.json
+            build/testflight.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Remove API key material
+        if: always()
+        timeout-minutes: 1
+        run: rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/asc-venv"
+
+  github-release:
+    name: GitHub release (tag pushes only)
+    needs: testflight
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-evidence
+          path: release-evidence
+
+      - name: Require processed TestFlight evidence
+        run: |
+          test -s release-evidence/testflight.json
+
+      - name: Generate changelog from squash-merge subjects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prev="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          if [ -n "$prev" ]; then
+            git log --no-merges --pretty=format:'- %s (%h)' "${prev}..${GITHUB_REF_NAME}" > whats-new.md
+          else
+            git log --no-merges --pretty=format:'- %s (%h)' "$GITHUB_REF_NAME" > whats-new.md
+          fi
+          if [ ! -s whats-new.md ]; then
+            echo "- Initial internal TestFlight build." > whats-new.md
+          fi
+
+      - name: Create GitHub release with build metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Set Flow $GITHUB_REF_NAME" \
+            --notes-file whats-new.md
