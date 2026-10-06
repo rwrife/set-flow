@@ -70,7 +70,7 @@ Current build shape is a standard iPhone app with native iPad support disabled b
 
 ## Signing, TestFlight, and App Store release plan
 - GitHub Actions secrets configured by name: `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`, `ASC_TEAM_ID`.
-- Planned CI/release path: build with iOS 26+ SDK, archive/sign with App Store Connect API key flow, upload to TestFlight, and gate release on real device/simulator evidence.
+- Release workflow: exact-pin archive/sign via App Store Connect API key, built archive identity/icon/privacy guards, upload, and processed-build polling. Requires green Pinned iOS CI at the exact mainline release SHA. See [release reproduction and privacy declarations](docs/release-evidence.md). A processed build is not claimed until the real run reports its ASC build ID.
 - `ASC_TEAM_ID` is the App Store Connect team identifier used for signing/provisioning selection.
 
 ## Current status

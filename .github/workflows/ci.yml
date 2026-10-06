@@ -45,6 +45,8 @@ jobs:
         run: bash scripts/check_zero_network.sh
       - name: Native-only framework gate
         run: bash scripts/check_native_only.sh
+      - name: Release Python unit tests
+        run: python3 -m unittest discover -s Scripts/tests -v
       - name: Gitignore keeps signing material out
         run: |
           set -e
